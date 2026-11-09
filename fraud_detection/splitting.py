@@ -1,4 +1,4 @@
-"""Chronological splitting that keeps tied time steps in one partition."""
+"""Chronological splitting that keeps identical transaction times together."""
 
 from dataclasses import dataclass
 
@@ -16,7 +16,7 @@ class TemporalSplit:
 def chronological_split(
     frame: pd.DataFrame, *, train_fraction: float = 0.70, validation_fraction: float = 0.15
 ) -> TemporalSplit:
-    """Fractions apply to observed distinct steps, not rows or elapsed clock time."""
+    """Fractions apply to distinct TransactionDT values, not rows or elapsed time."""
     if not (
         np.isfinite(train_fraction)
         and np.isfinite(validation_fraction)
@@ -25,20 +25,21 @@ def chronological_split(
         and train_fraction + validation_fraction < 1
     ):
         raise ValueError("Split fractions must be positive and sum to less than 1.")
-    steps = np.sort(frame["step"].unique())
-    train_end = int(len(steps) * train_fraction)
-    validation_end = int(len(steps) * (train_fraction + validation_fraction))
-    if not 0 < train_end < validation_end < len(steps):
-        raise ValueError("Too few distinct steps for three non-empty time partitions.")
+    times = np.sort(frame["TransactionDT"].unique())
+    train_end = int(len(times) * train_fraction)
+    validation_end = int(len(times) * (train_fraction + validation_fraction))
+    if not 0 < train_end < validation_end < len(times):
+        raise ValueError("Too few distinct transaction times for three non-empty partitions.")
 
-    # Stable order preserves source order within a step without assuming event chronology.
-    ordered = frame.sort_values("step", kind="stable")
-    first_validation_step = steps[train_end]
-    first_test_step = steps[validation_end]
+    # Stable sorting preserves source order when transactions have the same time.
+    ordered = frame.sort_values("TransactionDT", kind="stable")
+    first_validation_time = times[train_end]
+    first_test_time = times[validation_end]
     return TemporalSplit(
-        train=ordered.loc[ordered["step"] < first_validation_step].copy(),
+        train=ordered.loc[ordered["TransactionDT"] < first_validation_time].copy(),
         validation=ordered.loc[
-            (ordered["step"] >= first_validation_step) & (ordered["step"] < first_test_step)
+            (ordered["TransactionDT"] >= first_validation_time)
+            & (ordered["TransactionDT"] < first_test_time)
         ].copy(),
-        test=ordered.loc[ordered["step"] >= first_test_step].copy(),
+        test=ordered.loc[ordered["TransactionDT"] >= first_test_time].copy(),
     )

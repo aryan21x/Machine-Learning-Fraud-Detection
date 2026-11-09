@@ -13,6 +13,7 @@ import pandas as pd
 from sklearn.exceptions import ConvergenceWarning
 
 from fraud_detection.evaluation import evaluate_scores, select_threshold
+from fraud_detection.features import CATEGORICAL_COLUMNS
 from fraud_detection.models import MODEL_NAME, build_pipeline
 from fraud_detection.splitting import chronological_split
 
@@ -53,10 +54,12 @@ def _test_summary(metrics: dict[str, Any]) -> dict[str, Any]:
 
 
 def _prediction_frame(frame: pd.DataFrame, scores: np.ndarray, threshold: float) -> pd.DataFrame:
-    columns = ["step", "type", "amount"]
-    columns.extend(column for column in ("nameOrig", "nameDest", "isFraud") if column in frame)
+    # Keep selected raw inputs so a held-out batch can be scored again without
+    # needing to rejoin its original identity file.
+    columns = ["TransactionID", "TransactionDT", "TransactionAmt", *CATEGORICAL_COLUMNS]
+    if "isFraud" in frame:
+        columns.append("isFraud")
     result = frame[columns].copy()
-    result.insert(0, "source_row", frame.index)
     result["fraud_score"] = scores
     result["threshold"] = threshold
     result["prediction"] = (scores >= threshold).astype("int8")
@@ -142,6 +145,22 @@ def run_training(
     )
     LOGGER.info("Completed training in %s", output)
     return report
+
+
+def latest_model_path() -> Path:
+    """Find the highest numbered completed training run in artifacts/."""
+    runs = [
+        (int(directory.name[3:]), directory / f"{MODEL_NAME}.joblib")
+        for directory in Path("artifacts").glob("run*")
+        if directory.name[3:].isdigit()
+        and (directory / f"{MODEL_NAME}.joblib").is_file()
+        and (directory / "report.json").is_file()
+    ]
+    if not runs:
+        raise FileNotFoundError(
+            "No completed trained model found. Run: python -m fraud_detection train"
+        )
+    return max(runs, key=lambda run: run[0])[1]
 
 
 def load_model(path: str | Path) -> dict[str, Any]:

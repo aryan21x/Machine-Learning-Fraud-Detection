@@ -1,15 +1,31 @@
-"""Stateless features available when a transaction is submitted."""
+"""Selected IEEE-CIS inputs available when a transaction is scored."""
 
 import numpy as np
 import pandas as pd
 
 
+# These are labels, not quantities. A card/address code of 150 does not mean
+# "larger" or "riskier" than a code of 100.
+CATEGORICAL_COLUMNS = (
+    "ProductCD", "card1", "card2", "card3", "card4", "card5", "card6",
+    "addr1", "addr2", "P_emaildomain", "R_emaildomain", "DeviceType",
+)
+CODE_COLUMNS = ("card1", "card2", "card3", "card5", "addr1", "addr2")
+
+
 def build_features(frame: pd.DataFrame) -> pd.DataFrame:
-    """Explicit allowlist: future balances, IDs, flags, and labels cannot enter."""
-    amount = frame["amount"].to_numpy(dtype=float)
+    """Prepare amount and selected categories; exclude labels, IDs, and raw time."""
+    features = frame[list(CATEGORICAL_COLUMNS)].copy()
+    # The same code may arrive as 150, 150.0, or "150.0" in CSV/Parquet.
+    for column in CODE_COLUMNS:
+        features[column] = pd.to_numeric(features[column]).astype("Int64")
+    # Make category labels consistent and give blank entries a "missing" label.
+    features = features.astype("string").fillna("missing")
+    # models.py then one-hot encodes labels using categories learned on training
+    # data only: e.g. card4="visa" gives card4_visa=1, card4_mastercard=0.
+    # Unseen categories at prediction time get all-zero indicators for that column.
+    amount = frame["TransactionAmt"].to_numpy(dtype=float)
     # log1p(amount) means log(1 + amount). It compresses large amounts before
     # Logistic Regression applies its learned weight; +1 also handles zero amounts.
-    return pd.DataFrame(
-        {"log_amount": np.log1p(amount), "type": frame["type"].astype(str)},
-        index=frame.index,
-    )
+    features.insert(0, "log_amount", np.log1p(amount))
+    return features
