@@ -43,7 +43,7 @@ def load_transactions(path: str | Path) -> "DataFrame":
     if "isFraud" in frame:
         frame["isFraud"] = frame["isFraud"].astype("int8")
 
-    # A saved prediction batch already contains DeviceType and can be scored again.
+    # Join identity information only when DeviceType is not already included.
     if "DeviceType" not in frame:
         identity_path = path.with_name(path.name.replace("_transaction", "_identity"))
         if identity_path != path and identity_path.is_file():
@@ -60,101 +60,36 @@ def load_transactions(path: str | Path) -> "DataFrame":
     return frame
 
 
-class _MainParser(argparse.ArgumentParser):
-    def format_help(self) -> str:
-        return (
-            "Fraud detection\n\n"
-            f"Run: {self.prog} COMMAND [options]\n\n"
-            "Commands:\n"
-            "  train     Train Logistic Regression and measure results\n"
-            "  predict   Make predictions using a saved model\n\n"
-            "Train your model:\n"
-            f"  {self.prog} train\n\n"
-            "More help:\n"
-            f"  {self.prog} train --help\n"
-        )
-
-
-def _print_prediction_summary(predictions: "DataFrame") -> None:
-    flagged = predictions["prediction"].eq(1)
-    total = len(predictions)
-    flagged_count = int(flagged.sum())
-    print("\nPrediction summary for this input file")
-    print(f"  Transactions scored: {total:,}")
-    print(f"  Flagged as fraud: {flagged_count:,}")
-    print(f"  Not flagged: {total - flagged_count:,}")
-
-    if "isFraud" not in predictions:
-        print("  Actual fraud labels unavailable; error counts cannot be calculated.")
-        return
-
-    actual_fraud = predictions["isFraud"].eq(1)
-    caught = int((flagged & actual_fraud).sum())
-    false_alarms = flagged_count - caught
-    missed = int((~flagged & actual_fraud).sum())
-    print("\nCompared with known fraud labels:")
-    print(f"  Fraud caught (true positives): {caught:,}")
-    print(f"  False alarms (false positives): {false_alarms:,}")
-    print(f"  Missed fraud (false negatives): {missed:,}")
-
-
 def _parser() -> argparse.ArgumentParser:
-    parser = _MainParser(
+    parser = argparse.ArgumentParser(
         prog="python -m fraud_detection",
-        usage="%(prog)s COMMAND [options]",
-    )
-    commands = parser.add_subparsers(
-        dest="command", required=True, prog=parser.prog, parser_class=argparse.ArgumentParser
-    )
-    train = commands.add_parser(
-        "train",
         usage="%(prog)s [options]",
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        description="Train Logistic Regression and save the model and results in artifacts/.",
+        description="Train Logistic Regression and Random Forest; save models and results in artifacts/.",
         epilog="Example: %(prog)s",
     )
-    train.add_argument(
+    parser.add_argument(
         "--input", type=Path, metavar="FILE",
         default=Path("data/ieee-fraud-detection/train_transaction.csv"),
         help="Optional transaction file (default: %(default)s)",
     )
-    train.add_argument(
+    parser.add_argument(
         "--output", type=Path, metavar="FOLDER",
-        help="Optional results folder; otherwise saves to a new folder in artifacts/",
+        help="Optional results folder (default: artifacts/); replaces existing generated files",
     )
-    train.add_argument(
+    parser.add_argument(
         "--seed", type=int, default=os.environ.get("FRAUD_SEED", "42"),
         help="Random seed (default: %(default)s)",
     )
-    train.add_argument(
+    parser.add_argument(
         "--train-fraction", type=float, default=0.70,
         help="Share of distinct time values for training (default: 0.70)",
     )
-    train.add_argument(
+    parser.add_argument(
         "--validation-fraction", type=float, default=0.15,
         help="Share of distinct time values for validation (default: 0.15)",
     )
 
-    predict = commands.add_parser(
-        "predict",
-        usage="%(prog)s [options]",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        description="Print prediction findings and save individual predictions in reports/.",
-        epilog="Example: %(prog)s",
-    )
-    predict.add_argument(
-        "--model", type=Path, metavar="FILE",
-        help="Optional model path; defaults to the latest completed run in artifacts/",
-    )
-    predict.add_argument(
-        "--input", type=Path, metavar="FILE",
-        default=Path("data/ieee-fraud-detection/train_transaction.csv"),
-        help="Optional transaction file (default: %(default)s)",
-    )
-    predict.add_argument(
-        "--output", type=Path, metavar="FILE",
-        help="Optional CSV path; otherwise saves a new file in reports/",
-    )
     return parser
 
 
@@ -162,17 +97,6 @@ def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
     try:
-        if args.command == "predict":
-            from fraud_detection.training import latest_model_path
-
-            args.model = args.model if args.model is not None else latest_model_path()
-            if not args.model.is_file():
-                raise FileNotFoundError(
-                    f"Model not found: {args.model}. Use its full path, such as "
-                    "artifacts/run1/logistic_regression.joblib, or omit --model "
-                    "to use the latest completed run."
-                )
-            LOGGER.info("Using model %s", args.model)
         LOGGER.info("Loading %s", args.input)
         try:
             frame = load_transactions(args.input)
@@ -182,23 +106,25 @@ def main(argv: list[str] | None = None) -> int:
                 "the matching identity file is joined automatically.", exc,
             )
             return 2
-        if args.command == "train":
-            from fraud_detection.training import TrainingConfig, run_training
+        from fraud_detection.training import TrainingConfig, run_training
 
-            report = run_training(
-                frame,
-                args.input,
-                args.output,
-                config=TrainingConfig(args.seed, args.train_fraction, args.validation_fraction),
-            )
-            print(f"Training complete. Model: {report['preferred_model']}")
-            print(f"Saved to: {report['output_directory']}")
-        else:
-            from fraud_detection.training import predict_batch
-
-            output, predictions = predict_batch(args.model, frame, args.output)
-            _print_prediction_summary(predictions)
-            print(f"Predictions saved to: {output}")
+        report = run_training(
+            frame,
+            args.input,
+            args.output,
+            config=TrainingConfig(args.seed, args.train_fraction, args.validation_fraction),
+        )
+        print("\nHeld-out test results")
+        print(f"{'Model':<22} {'Precision':>9} {'Recall':>9} {'F1':>9} {'AP':>9}")
+        for name, results in report["models"].items():
+            values = [
+                "n/a" if results["test_data_only"][field] is None
+                else f"{results['test_data_only'][field]:.4f}"
+                for field in ("precision", "recall", "f1", "average_precision")
+            ]
+            print(f"{name:<22} " + " ".join(f"{value:>9}" for value in values))
+        print(f"Best validation model: {report['preferred_model']}")
+        print(f"Saved to: {report['output_directory']}")
     except (OSError, ValueError, ImportError) as exc:
         LOGGER.error("%s", exc)
         return 2

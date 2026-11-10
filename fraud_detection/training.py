@@ -1,4 +1,4 @@
-"""Train, evaluate, persist, and reload the minimum working ML system."""
+"""Train, evaluate, and save classifiers with held-out predictions and results."""
 
 import json
 import logging
@@ -14,7 +14,7 @@ from sklearn.exceptions import ConvergenceWarning
 
 from fraud_detection.evaluation import evaluate_scores, select_threshold
 from fraud_detection.features import CATEGORICAL_COLUMNS
-from fraud_detection.models import MODEL_NAME, build_pipeline
+from fraud_detection.models import MODEL_NAMES, build_pipeline
 from fraud_detection.splitting import chronological_split
 
 LOGGER = logging.getLogger(__name__)
@@ -27,22 +27,7 @@ class TrainingConfig:
     validation_fraction: float = 0.15
 
 
-def _create_run_directory() -> Path:
-    """Create artifacts/run1, run2, etc. without reusing an existing folder."""
-    root = Path("artifacts")
-    root.mkdir(parents=True, exist_ok=True)
-    number = 1
-    while True:
-        directory = root / f"run{number}"
-        try:
-            directory.mkdir()
-        except FileExistsError:
-            number += 1
-        else:
-            return directory
-
-
-def _test_summary(metrics: dict[str, Any]) -> dict[str, Any]:
+def _metrics_summary(metrics: dict[str, Any]) -> dict[str, Any]:
     fields = (
         "precision", "recall", "f1", "average_precision", "roc_auc",
         "true_positives", "false_positives", "false_negatives",
@@ -54,8 +39,7 @@ def _test_summary(metrics: dict[str, Any]) -> dict[str, Any]:
 
 
 def _prediction_frame(frame: pd.DataFrame, scores: np.ndarray, threshold: float) -> pd.DataFrame:
-    # Keep selected raw inputs so a held-out batch can be scored again without
-    # needing to rejoin its original identity file.
+    # Keep selected inputs alongside test predictions for inspecting model errors.
     columns = ["TransactionID", "TransactionDT", "TransactionAmt", *CATEGORICAL_COLUMNS]
     if "isFraud" in frame:
         columns.append("isFraud")
@@ -79,16 +63,14 @@ def run_training(
     *,
     config: TrainingConfig | None = None,
 ) -> dict[str, Any]:
-    """Train Logistic Regression and choose its threshold using validation data.
+    """Compare classifiers and choose their thresholds using validation data.
 
-    By default, save to a new artifacts/runN folder. An explicit nonempty output
-    directory fails rather than overwriting files. report.json marks completion.
+    Save directly to artifacts/ by default, replacing the existing model files,
+    report, and test-prediction CSVs on each execution.
     """
     config = config or TrainingConfig()
     source = Path(source)
-    output = Path(output) if output is not None else None
-    if output is not None and output.exists() and (not output.is_dir() or any(output.iterdir())):
-        raise FileExistsError(f"Run output is not empty: {output}. Choose a new run directory.")
+    output = Path(output) if output is not None else Path("artifacts")
 
     split = chronological_split(
         frame,
@@ -96,100 +78,64 @@ def run_training(
         validation_fraction=config.validation_fraction,
     )
     report: dict[str, Any] = {
-        "report_version": 3,
+        "report_version": 4,
         "dataset": source.name,
         "config": asdict(config),
         "models": {},
     }
-    if output is None:
-        output = _create_run_directory()
-    else:
-        output.mkdir(parents=True, exist_ok=True)
+    output.mkdir(parents=True, exist_ok=True)
     report["output_directory"] = str(output)
 
-    LOGGER.info("Fitting %s on training only", MODEL_NAME)
-    model = build_pipeline(seed=config.seed)
-    with warnings.catch_warnings():
-        warnings.simplefilter("error", ConvergenceWarning)
-        try:
-            model.fit(split.train, split.train["isFraud"])
-        except ConvergenceWarning as exc:
-            raise ValueError(
-                "Model did not converge; review scaling and training settings."
-            ) from exc
+    validation_ranking: dict[str, tuple[float, float]] = {}
+    for model_name in MODEL_NAMES:
+        LOGGER.info("Fitting %s on training only", model_name)
+        model = build_pipeline(model_name, seed=config.seed)
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", ConvergenceWarning)
+            try:
+                model.fit(split.train, split.train["isFraud"])
+            except ConvergenceWarning as exc:
+                raise ValueError(
+                    f"{model_name} did not converge; review scaling and training settings."
+                ) from exc
 
-    scores = model.predict_proba(split.validation)[:, 1]
-    # Pick the threshold with the highest validation F1 (precision/recall balance).
-    # Use that same threshold for test evaluation and future predictions.
-    threshold = select_threshold(split.validation["isFraud"], scores)
-    validation = evaluate_scores(split.validation["isFraud"], scores, threshold)
-    test_scores = model.predict_proba(split.test)[:, 1]
-    report["preferred_model"] = MODEL_NAME
-    report["models"][MODEL_NAME] = {
-        "selected_threshold": threshold,
-        "validation": {
-            "average_precision": round(validation["average_precision"], 4),
-            "f1": round(validation["f1"], 4),
-            "false_positives": validation["false_positives"],
-            "false_negatives": validation["false_negatives"],
-        },
-        "test": _test_summary(evaluate_scores(split.test["isFraud"], test_scores, threshold)),
-    }
-    bundle = {"pipeline": model, "threshold": threshold}
-    joblib.dump(bundle, output / f"{MODEL_NAME}.joblib", compress=3)
-    _prediction_frame(split.test, test_scores, threshold).to_csv(
-        output / f"{MODEL_NAME}_test_predictions.csv", index=False
-    )
+        scores = model.predict_proba(split.validation)[:, 1]
+        # Pick this model's threshold with the highest validation F1.
+        # Reuse it unchanged for test evaluation and future predictions.
+        threshold = select_threshold(split.validation["isFraud"], scores)
+        validation = evaluate_scores(split.validation["isFraud"], scores, threshold)
+        validation_ranking[model_name] = (validation["f1"], validation["average_precision"])
+        test_scores = model.predict_proba(split.test)[:, 1]
+        # Score all input rows with the same trained model and validation threshold.
+        # This includes training rows; it is separate from held-out performance.
+        full_scores = model.predict_proba(frame)[:, 1]
+        report["models"][model_name] = {
+            "selected_threshold": threshold,
+            "validation": {
+                "average_precision": round(validation["average_precision"], 4),
+                "f1": round(validation["f1"], 4),
+                "false_positives": validation["false_positives"],
+                "false_negatives": validation["false_negatives"],
+            },
+            "test_data_only": _metrics_summary(
+                evaluate_scores(split.test["isFraud"], test_scores, threshold)
+            ),
+            "full_run": {
+                "includes_training_data": True,
+                **_metrics_summary(evaluate_scores(frame["isFraud"], full_scores, threshold)),
+            },
+        }
+        bundle = {"pipeline": model, "threshold": threshold}
+        joblib.dump(bundle, output / f"{model_name}.joblib", compress=3)
+        _prediction_frame(split.test, test_scores, threshold).to_csv(
+            output / f"{model_name}_test_predictions.csv", index=False
+        )
+
+    # Report the validation winner using unrounded F1, then AP to break ties.
+    # Test metrics never influence the model choice.
+    report["preferred_model"] = max(validation_ranking, key=lambda name: validation_ranking[name])
     (output / "report.json").write_text(
         json.dumps(report, indent=2, allow_nan=False) + "\n", encoding="utf-8"
     )
     LOGGER.info("Completed training in %s", output)
     return report
-
-
-def latest_model_path() -> Path:
-    """Find the highest numbered completed training run in artifacts/."""
-    runs = [
-        (int(directory.name[3:]), directory / f"{MODEL_NAME}.joblib")
-        for directory in Path("artifacts").glob("run*")
-        if directory.name[3:].isdigit()
-        and (directory / f"{MODEL_NAME}.joblib").is_file()
-        and (directory / "report.json").is_file()
-    ]
-    if not runs:
-        raise FileNotFoundError(
-            "No completed trained model found. Run: python -m fraud_detection train"
-        )
-    return max(runs, key=lambda run: run[0])[1]
-
-
-def load_model(path: str | Path) -> dict[str, Any]:
-    """Load the saved pipeline and threshold from a local joblib file."""
-    return joblib.load(path)
-
-
-def predict_batch(
-    model_path: str | Path, frame: pd.DataFrame, output: str | Path | None = None
-) -> tuple[Path, pd.DataFrame]:
-    """Save predictions and return their CSV path and scored transactions."""
-    output = Path(output) if output is not None else None
-    bundle = load_model(model_path)
-    scores = bundle["pipeline"].predict_proba(frame)[:, 1]
-    predictions = _prediction_frame(frame, scores, bundle["threshold"])
-    if output is not None:
-        output.parent.mkdir(parents=True, exist_ok=True)
-        predictions.to_csv(output, index=False, mode="x")
-        return output, predictions
-
-    directory = Path("reports")
-    directory.mkdir(parents=True, exist_ok=True)
-    number = 1
-    while True:
-        filename = "predictions.csv" if number == 1 else f"predictions{number}.csv"
-        path = directory / filename
-        try:
-            predictions.to_csv(path, index=False, mode="x")
-        except FileExistsError:
-            number += 1
-        else:
-            return path, predictions
