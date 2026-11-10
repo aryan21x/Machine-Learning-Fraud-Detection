@@ -11,10 +11,12 @@ CATEGORICAL_COLUMNS = (
     "addr1", "addr2", "P_emaildomain", "R_emaildomain", "DeviceType",
 )
 CODE_COLUMNS = ("card1", "card2", "card3", "card5", "addr1", "addr2")
+C_COLUMNS = tuple(f"C{number}" for number in range(1, 15))
+NUMERIC_COLUMNS = ("log_amount", *C_COLUMNS)
 
 
 def build_features(frame: pd.DataFrame) -> pd.DataFrame:
-    """Prepare amount and selected categories; exclude labels, IDs, and raw time."""
+    """Prepare amount, numeric C inputs, and selected transaction categories."""
     features = frame[list(CATEGORICAL_COLUMNS)].copy()
     # The same code may arrive as 150, 150.0, or "150.0" in CSV/Parquet.
     for column in CODE_COLUMNS:
@@ -28,4 +30,7 @@ def build_features(frame: pd.DataFrame) -> pd.DataFrame:
     # log1p(amount) means log(1 + amount). It compresses large amounts before
     # Logistic Regression applies its learned weight; +1 also handles zero amounts.
     features.insert(0, "log_amount", np.log1p(amount))
+    # Keep supplied C values numeric; they are not category codes.
+    # models.py scales them using training statistics for Logistic Regression.
+    features[list(C_COLUMNS)] = frame[list(C_COLUMNS)].astype("float64")
     return features

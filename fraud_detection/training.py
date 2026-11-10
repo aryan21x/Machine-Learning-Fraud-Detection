@@ -13,7 +13,7 @@ import pandas as pd
 from sklearn.exceptions import ConvergenceWarning
 
 from fraud_detection.evaluation import evaluate_scores, select_threshold
-from fraud_detection.features import CATEGORICAL_COLUMNS
+from fraud_detection.features import CATEGORICAL_COLUMNS, C_COLUMNS
 from fraud_detection.models import MODEL_NAMES, build_pipeline
 from fraud_detection.splitting import chronological_split
 
@@ -40,7 +40,9 @@ def _metrics_summary(metrics: dict[str, Any]) -> dict[str, Any]:
 
 def _prediction_frame(frame: pd.DataFrame, scores: np.ndarray, threshold: float) -> pd.DataFrame:
     # Keep selected inputs alongside test predictions for inspecting model errors.
-    columns = ["TransactionID", "TransactionDT", "TransactionAmt", *CATEGORICAL_COLUMNS]
+    columns = [
+        "TransactionID", "TransactionDT", "TransactionAmt", *C_COLUMNS, *CATEGORICAL_COLUMNS,
+    ]
     if "isFraud" in frame:
         columns.append("isFraud")
     result = frame[columns].copy()

@@ -6,7 +6,7 @@ from sklearn.linear_model import LogisticRegression
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import FunctionTransformer, OneHotEncoder, StandardScaler
 
-from fraud_detection.features import CATEGORICAL_COLUMNS, build_features
+from fraud_detection.features import CATEGORICAL_COLUMNS, NUMERIC_COLUMNS, build_features
 
 MODEL_NAMES = ("logistic_regression", "random_forest")
 
@@ -21,8 +21,8 @@ def build_pipeline(model_name: str = "logistic_regression", *, seed: int = 42) -
         # Bound tree size and parallelism for a laptop with 16 GB RAM.
         # balanced_subsample gives fraud more weight within each bootstrap sample.
         estimator = RandomForestClassifier(
-            n_estimators=100,
-            max_depth=20,
+            n_estimators=200,
+            max_depth=30,
             min_samples_leaf=5,
             max_features="sqrt",
             class_weight="balanced_subsample",
@@ -37,7 +37,7 @@ def build_pipeline(model_name: str = "logistic_regression", *, seed: int = 42) -
             (
                 "numeric",
                 StandardScaler() if model_name == "logistic_regression" else "passthrough",
-                ["log_amount"],
+                list(NUMERIC_COLUMNS),
             ),
             ("categorical", OneHotEncoder(handle_unknown="ignore"), list(CATEGORICAL_COLUMNS)),
         ],

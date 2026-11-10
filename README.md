@@ -37,24 +37,12 @@ python -m pip install -r requirements.txt
 python -m fraud_detection
 ```
 
-Training defaults to `data/ieee-fraud-detection/train_transaction.csv` and
-automatically joins `DeviceType` from `train_identity.csv` in the same folder.
-Use `--input FILE` only to train on a different file.
-Do not pass `train_identity.csv` as the main input.
-
-Both models, a compact comparison report, and each model's held-out test predictions
-are saved directly in `artifacts/`. Each execution replaces those files with the
-latest results. The terminal prints a comparison table.
-
-The test-prediction CSVs include fraud scores, the chosen threshold, predicted
-labels, and false-positive/false-negative outcomes. Input can be CSV or Parquet;
-a matching `*_identity` file in the same format is joined automatically.
-
 ## Model inputs
 
 | Columns | Preparation |
 | --- | --- |
 | `TransactionAmt` | Log-transformed; also scaled for Logistic Regression. |
+| `C1`–`C14` | Provided numeric features; scaled for Logistic Regression. |
 | `ProductCD` | Product category. |
 | `card1`–`card6` | Categorical card attributes, including encoded fields. |
 | `addr1`, `addr2` | Categorical address codes. |
@@ -68,20 +56,21 @@ Categorical fields use one-hot encoding, with missing values represented as
 is used for splitting. `isFraud` is the answer for training and evaluation.
 None of these three columns is a model input.
 
-The models currently leave out `C1`–`C14`, `D1`–`D15`, `M1`–`M9`, `V1`–`V339`,
+The models currently leave out `D1`–`D15`, `M1`–`M9`, `V1`–`V339`,
 `id_*`, `DeviceInfo`, `dist1`, and `dist2`. These can be assessed in later
 experiments; their usefulness has not been ruled out.
 
-Both models use these same inputs. Random Forest combines 100 decision trees,
-with depth limited to 20 and at least 5 training records per leaf. It uses class
-weights to give fraud more influence and two CPU workers to limit resource use.
-These settings are a starting point for tuning on validation data.
+Both models use the same 27 source columns. The numeric `C` values are used
+directly; their individual business meanings are anonymized.
+Random Forest combines 200 decision trees,
+with depth limited to 30 and at least 5 training records per leaf.
 
 ## Evaluation
 
-The earliest 70% of distinct `TransactionDT` values are used for training, the
-next 15% for validation, and the rest for test. Equal time values stay together;
-these fractions do not guarantee exact percentages of rows.
+By default, the earliest 70% of distinct `TransactionDT` values are used for
+training, the next 15% for validation, and the final 15% for testing.
+Equal time values stay together; these percentages refer to distinct time
+values, so the percentages of transaction rows can differ.
 
 Validation chooses each model's threshold with the highest F1. That threshold
 stays fixed for all evaluation. Each model in `report.json` has:
@@ -97,18 +86,32 @@ true-positive, false-positive, and false-negative counts.
 Kaggle's separate test files have no fraud labels, so local evaluation uses the
 held-out part of the labeled training file.
 
-A full-data comparison with seed 42 measured these results on the same 88,081
-held-out transactions:
+## Results
 
-| Model | Precision | Recall | F1 | Average precision | ROC-AUC |
+**The table shows results on held-out test data only: 88,081 transactions, with
+seed 42.** Each model's threshold was selected using validation data and applied
+unchanged to the test data. Thresholds below are rounded to six decimal places.
+These are exploratory results from repeated experiments on the same split.
+
+| Model | Selected threshold | Precision | Recall | F1 | ROC-AUC |
 | --- | --- | --- | --- | --- | --- |
-| Logistic Regression | 0.1752 | 0.2610 | 0.2096 | 0.1504 | 0.7622 |
-| Random Forest | 0.2394 | 0.2777 | 0.2571 | 0.1617 | 0.7724 |
+| Logistic Regression | 0.846915 | 0.1909 | 0.2656 | 0.2221 | 0.7724 |
+| Random Forest (200 trees) | 0.709416 | 0.4171 | 0.3834 | 0.3995 | 0.8278 |
 
-Logistic Regression had higher validation F1: 0.2812 versus 0.2602.
+The four metrics below range from 0 to 1; higher is better:
+
+- **Precision:** The fraction of flagged transactions that were actually
+  fraudulent. Higher precision means fewer false alarms among the flags.
+- **Recall:** The fraction of actual fraudulent transactions that the model
+  caught. Higher recall means less missed fraud.
+- **F1:** Combines precision and recall using their harmonic mean:
+  `2 * precision * recall / (precision + recall)`. A high F1 requires both to be strong.
+- **ROC-AUC:** Area under the curve comparing recall with the false-positive
+  rate (the fraction of legitimate transactions incorrectly flagged) across
+  thresholds. It summarizes how well fraud scores separate fraudulent and
+  legitimate transactions: **0.5** means random ranking and **1.0** means
+  perfect separation.
+
+Random Forest had higher validation F1: 0.3836 versus 0.3247.
 Random Forest performed better on this test period, while
 both models still missed most fraud.
-
-Fraud is uncommon, so accuracy alone can hide missed fraud. Use precision,
-recall, F1, average precision, and ROC-AUC together. Scores are not calibrated
-estimates of real-world fraud probability, and many source fields are anonymized.

@@ -27,14 +27,15 @@ def _read_columns(path: Path, columns: tuple[str, ...]) -> "DataFrame":
 
 
 def load_transactions(path: str | Path) -> "DataFrame":
-    """Read IEEE-CIS transactions and add DeviceType from the matching identity file."""
+    """Read transactions and join DeviceType from the matching identity file."""
     import pandas as pd
 
-    from fraud_detection.features import CATEGORICAL_COLUMNS
+    from fraud_detection.features import CATEGORICAL_COLUMNS, C_COLUMNS
 
     path = Path(path)
     columns = (
-        "TransactionID", "TransactionDT", "TransactionAmt", "isFraud", *CATEGORICAL_COLUMNS
+        "TransactionID", "TransactionDT", "TransactionAmt", "isFraud",
+        *C_COLUMNS, *CATEGORICAL_COLUMNS,
     )
     frame = _read_columns(path, columns)
     frame["TransactionID"] = frame["TransactionID"].astype("int64")
@@ -43,7 +44,7 @@ def load_transactions(path: str | Path) -> "DataFrame":
     if "isFraud" in frame:
         frame["isFraud"] = frame["isFraud"].astype("int8")
 
-    # Join identity information only when DeviceType is not already included.
+    # Join DeviceType only when it is not already supplied.
     if "DeviceType" not in frame:
         identity_path = path.with_name(path.name.replace("_transaction", "_identity"))
         if identity_path != path and identity_path.is_file():
