@@ -40,6 +40,8 @@ def _metrics_summary(metrics: dict[str, Any]) -> dict[str, Any]:
 
 def _prediction_frame(frame: pd.DataFrame, scores: np.ndarray, threshold: float) -> pd.DataFrame:
     # Keep selected inputs alongside test predictions for inspecting model errors.
+    # Preserve full score precision when float32 XGBoost outputs are written to CSV.
+    scores = np.asarray(scores, dtype=float)
     columns = [
         "TransactionID", "TransactionDT", "TransactionAmt", *C_COLUMNS, *CATEGORICAL_COLUMNS,
     ]
@@ -92,6 +94,12 @@ def run_training(
     for model_name in MODEL_NAMES:
         LOGGER.info("Fitting %s on training only", model_name)
         model = build_pipeline(model_name, seed=config.seed)
+        if model_name == "xgboost":
+            # Derive the class imbalance weight from training labels only.
+            labels = split.train["isFraud"]
+            model.set_params(
+                classifier__scale_pos_weight=float(labels.eq(0).sum() / labels.eq(1).sum())
+            )
         with warnings.catch_warnings():
             warnings.simplefilter("error", ConvergenceWarning)
             try:

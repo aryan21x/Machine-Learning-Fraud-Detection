@@ -23,9 +23,10 @@ def build_features(frame: pd.DataFrame) -> pd.DataFrame:
         features[column] = pd.to_numeric(features[column]).astype("Int64")
     # Make category labels consistent and give blank entries a "missing" label.
     features = features.astype("string").fillna("missing")
-    # models.py then one-hot encodes labels using categories learned on training
-    # data only: e.g. card4="visa" gives card4_visa=1, card4_mastercard=0.
-    # Unseen categories at prediction time get all-zero indicators for that column.
+    # Logistic Regression and Random Forest one-hot encode these labels:
+    # e.g. card4="visa" gives card4_visa=1, card4_mastercard=0.
+    # XGBoost uses codes marked as categories, without assuming a numeric order.
+    # Both encoders learn categories on training data only and handle unseen labels.
     amount = frame["TransactionAmt"].to_numpy(dtype=float)
     # log1p(amount) means log(1 + amount). It compresses large amounts before
     # Logistic Regression applies its learned weight; +1 also handles zero amounts.

@@ -66,7 +66,7 @@ def _parser() -> argparse.ArgumentParser:
         prog="python -m fraud_detection",
         usage="%(prog)s [options]",
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        description="Train Logistic Regression and Random Forest; save models and results in artifacts/.",
+        description="Compare Logistic Regression, Random Forest, and XGBoost; save results in artifacts/.",
         epilog="Example: %(prog)s",
     )
     parser.add_argument(

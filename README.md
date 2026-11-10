@@ -1,7 +1,7 @@
 # Machine Learning Fraud Detection
 
-Fraud detection with Python and scikit-learn, comparing Logistic Regression and
-Random Forest on IEEE-CIS data.
+A reproducible comparison of Logistic Regression, Random Forest, and XGBoost
+for fraud detection on IEEE-CIS transaction data.
 
 ## Dataset
 
@@ -37,6 +37,9 @@ python -m pip install -r requirements.txt
 python -m fraud_detection
 ```
 
+Each run replaces the three saved models, held-out prediction CSVs, and
+`report.json` in `artifacts/`.
+
 ## Model inputs
 
 | Columns | Preparation |
@@ -49,8 +52,11 @@ python -m fraud_detection
 | `P_emaildomain`, `R_emaildomain` | Purchaser and recipient email domains. |
 | `DeviceType` | Device category from the identity file. |
 
-Categorical fields use one-hot encoding, with missing values represented as
-`missing`. Categories and numeric preprocessing are learned from training data only.
+Logistic Regression and Random Forest use one-hot encoding for categorical fields.
+XGBoost uses native categorical splits with category codes learned from training
+data. These codes identify categories without implying an order; unseen labels
+are treated as unknown. Missing categorical values are represented as `missing`.
+Category mappings and numeric preprocessing are learned from training data only.
 
 `TransactionID` is used for joining and identifying predictions. `TransactionDT`
 is used for splitting. `isFraud` is the answer for training and evaluation.
@@ -60,10 +66,14 @@ The models currently leave out `D1`–`D15`, `M1`–`M9`, `V1`–`V339`,
 `id_*`, `DeviceInfo`, `dist1`, and `dist2`. These can be assessed in later
 experiments; their usefulness has not been ruled out.
 
-Both models use the same 27 source columns. The numeric `C` values are used
+All three models use the same 27 source columns. The numeric `C` values are used
 directly; their individual business meanings are anonymized.
 Random Forest combines 200 decision trees,
 with depth limited to 30 and at least 5 training records per leaf.
+XGBoost adds 300 trees sequentially, with maximum depth 6 and learning rate 0.05.
+Each new tree learns corrections to the predictions made by the earlier trees.
+It uses CPU histogram training, two workers, and a fraud class weight calculated
+from the training partition. These are initial settings for comparison.
 
 ## Evaluation
 
@@ -96,7 +106,9 @@ These are exploratory results from repeated experiments on the same split.
 | Model | Selected threshold | Precision | Recall | F1 | ROC-AUC |
 | --- | --- | --- | --- | --- | --- |
 | Logistic Regression | 0.846915 | 0.1909 | 0.2656 | 0.2221 | 0.7724 |
-| Random Forest (200 trees) | 0.709416 | 0.4171 | 0.3834 | 0.3995 | 0.8278 |
+| Random Forest | 0.709416 | 0.4171 | 0.3834 | 0.3995 | 0.8278 |
+| XGBoost | 0.818520 | 0.5759 | 0.4111 | 0.4797 | 0.8601 |
+
 
 The four metrics below range from 0 to 1; higher is better:
 
@@ -112,6 +124,6 @@ The four metrics below range from 0 to 1; higher is better:
   legitimate transactions: **0.5** means random ranking and **1.0** means
   perfect separation.
 
-Random Forest had higher validation F1: 0.3836 versus 0.3247.
-Random Forest performed better on this test period, while
-both models still missed most fraud.
+**Selected threshold:** The minimum fraud score needed to flag a transaction.
+It is chosen to maximize F1 on validation data, then kept fixed for testing.
+A higher threshold generally produces fewer fraud flags.
