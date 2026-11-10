@@ -13,7 +13,7 @@ LOGGER = logging.getLogger(__name__)
 
 
 def _read_columns(path: Path, columns: tuple[str, ...]) -> "DataFrame":
-    """Read selected fields without loading hundreds of unused IEEE-CIS columns."""
+    """Read named input columns from CSV or Parquet."""
     import pandas as pd
 
     if path.suffix.lower() in {".parquet", ".pq"}:
@@ -30,13 +30,10 @@ def load_transactions(path: str | Path) -> "DataFrame":
     """Read transactions and join DeviceType from the matching identity file."""
     import pandas as pd
 
-    from fraud_detection.features import CATEGORICAL_COLUMNS, C_COLUMNS
+    from fraud_detection.features import FEATURE_COLUMNS
 
     path = Path(path)
-    columns = (
-        "TransactionID", "TransactionDT", "TransactionAmt", "isFraud",
-        *C_COLUMNS, *CATEGORICAL_COLUMNS,
-    )
+    columns = ("TransactionID", "isFraud", *FEATURE_COLUMNS)
     frame = _read_columns(path, columns)
     frame["TransactionID"] = frame["TransactionID"].astype("int64")
     frame["TransactionDT"] = frame["TransactionDT"].astype("int64")
@@ -44,7 +41,7 @@ def load_transactions(path: str | Path) -> "DataFrame":
     if "isFraud" in frame:
         frame["isFraud"] = frame["isFraud"].astype("int8")
 
-    # Join DeviceType only when it is not already supplied.
+    # Join DeviceType only when it is not already supplied in the input.
     if "DeviceType" not in frame:
         identity_path = path.with_name(path.name.replace("_transaction", "_identity"))
         if identity_path != path and identity_path.is_file():
@@ -54,10 +51,11 @@ def load_transactions(path: str | Path) -> "DataFrame":
             frame = frame.merge(
                 identity, on="TransactionID", how="left", sort=False, validate="many_to_one"
             )
-            LOGGER.info("Loaded DeviceType from %s", identity_path)
+            LOGGER.info("Joined DeviceType from %s", identity_path)
         else:
-            frame["DeviceType"] = pd.NA
             LOGGER.info("No matching identity file; DeviceType will be missing")
+        if "DeviceType" not in frame:
+            frame["DeviceType"] = pd.NA
     return frame
 
 

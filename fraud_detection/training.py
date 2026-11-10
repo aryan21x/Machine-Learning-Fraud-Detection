@@ -13,7 +13,7 @@ import pandas as pd
 from sklearn.exceptions import ConvergenceWarning
 
 from fraud_detection.evaluation import evaluate_scores, select_threshold
-from fraud_detection.features import CATEGORICAL_COLUMNS, C_COLUMNS
+from fraud_detection.features import FEATURE_COLUMNS
 from fraud_detection.models import MODEL_NAMES, build_pipeline
 from fraud_detection.splitting import chronological_split
 
@@ -39,11 +39,12 @@ def _metrics_summary(metrics: dict[str, Any]) -> dict[str, Any]:
 
 
 def _prediction_frame(frame: pd.DataFrame, scores: np.ndarray, threshold: float) -> pd.DataFrame:
-    # Keep selected inputs alongside test predictions for inspecting model errors.
+    # Keep inputs alongside test predictions for inspecting model errors.
     # Preserve full score precision when float32 XGBoost outputs are written to CSV.
     scores = np.asarray(scores, dtype=float)
     columns = [
-        "TransactionID", "TransactionDT", "TransactionAmt", *C_COLUMNS, *CATEGORICAL_COLUMNS,
+        "TransactionID", "TransactionDT",
+        *(column for column in FEATURE_COLUMNS if column != "TransactionDT"),
     ]
     if "isFraud" in frame:
         columns.append("isFraud")
@@ -105,8 +106,11 @@ def run_training(
             try:
                 model.fit(split.train, split.train["isFraud"])
             except ConvergenceWarning as exc:
+                # Keep the solver's reason so iteration limits and other failures
+                # can be distinguished without accepting an unfinished fit.
+                reason = str(exc).splitlines()[0]
                 raise ValueError(
-                    f"{model_name} did not converge; review scaling and training settings."
+                    f"{model_name} did not converge: {reason}"
                 ) from exc
 
         scores = model.predict_proba(split.validation)[:, 1]

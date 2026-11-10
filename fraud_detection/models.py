@@ -2,6 +2,7 @@
 
 from sklearn.compose import ColumnTransformer
 from sklearn.ensemble import RandomForestClassifier
+from sklearn.impute import SimpleImputer
 from sklearn.linear_model import LogisticRegression
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import (
@@ -12,7 +13,12 @@ from sklearn.preprocessing import (
 )
 from xgboost import XGBClassifier
 
-from fraud_detection.features import CATEGORICAL_COLUMNS, NUMERIC_COLUMNS, build_features
+from fraud_detection.features import (
+    CATEGORICAL_COLUMNS,
+    NUMERIC_COLUMNS,
+    NULLABLE_NUMERIC_COLUMNS,
+    build_features,
+)
 
 MODEL_NAMES = ("logistic_regression", "random_forest", "xgboost")
 
@@ -21,8 +27,10 @@ def build_pipeline(model_name: str = "logistic_regression", *, seed: int = 42) -
     """Use the same inputs for all models; only Logistic Regression needs scaling."""
     categorical: OneHotEncoder | OrdinalEncoder = OneHotEncoder(handle_unknown="ignore")
     if model_name == "logistic_regression":
+        # The expanded numeric feature set can need more optimizer steps.
+        # This is a ceiling: fitting stops sooner when convergence is reached.
         estimator = LogisticRegression(
-            class_weight="balanced", solver="lbfgs", max_iter=1000, random_state=seed
+            class_weight="balanced", solver="lbfgs", max_iter=5000, random_state=seed
         )
     elif model_name == "random_forest":
         # Bound tree size and parallelism for a laptop with 16 GB RAM.
@@ -59,13 +67,26 @@ def build_pipeline(model_name: str = "logistic_regression", *, seed: int = 42) -
     else:
         raise ValueError(f"Unknown model: {model_name}")
 
+    nullable_columns = list(NULLABLE_NUMERIC_COLUMNS)
+    nullable_numeric: str | Pipeline = "passthrough"
+    if model_name != "xgboost":
+        # Fit D/distance/V replacements and missing flags on training data. Amount and
+        # C inputs retain their existing preparation; XGBoost keeps native NaNs.
+        nullable_steps = [
+            ("impute", SimpleImputer(strategy="median", add_indicator=True, keep_empty_features=True))
+        ]
+        if model_name == "logistic_regression":
+            nullable_steps.append(("scale", StandardScaler()))
+        nullable_numeric = Pipeline(nullable_steps)
+
     preprocessing = ColumnTransformer(
         [
             (
                 "numeric",
                 StandardScaler() if model_name == "logistic_regression" else "passthrough",
-                list(NUMERIC_COLUMNS),
+                [column for column in NUMERIC_COLUMNS if column not in nullable_columns],
             ),
+            ("nullable_numeric", nullable_numeric, nullable_columns),
             ("categorical", categorical, list(CATEGORICAL_COLUMNS)),
         ],
         remainder="drop",

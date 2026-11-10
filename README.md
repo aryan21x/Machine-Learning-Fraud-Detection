@@ -1,12 +1,21 @@
 # Machine Learning Fraud Detection
 
-A reproducible comparison of Logistic Regression, Random Forest, and XGBoost
-for fraud detection on IEEE-CIS transaction data.
+A Python pipeline for detecting fraud in online payments. It prepares transaction
+data, compares Logistic Regression, Random Forest, and XGBoost, and saves trained
+models, predictions, and evaluation reports.
+
+```mermaid
+flowchart LR
+    A[Load and join data] --> B[Split by time]
+    B --> C[Train and select thresholds]
+    C --> D[Evaluate and save outputs]
+```
 
 ## Dataset
 
 [IEEE-CIS Fraud Detection](https://www.kaggle.com/competitions/ieee-fraud-detection/overview)
-contains anonymized e-commerce transactions supplied by Vesta.
+contains anonymized e-commerce transactions supplied by Vesta. The labeled file
+has 590,540 transactions, including 20,663 fraudulent payments (about 3.5%).
 See the [data description and downloads](https://www.kaggle.com/competitions/ieee-fraud-detection/data).
 Kaggle requires sign-in and acceptance of the competition rules.
 
@@ -17,13 +26,14 @@ train_transaction.csv
 train_identity.csv
 ```
 
-The loader reads selected columns and automatically joins `DeviceType` from the
-matching identity file using `TransactionID`. Transactions without identity
-information stay in the data. The identity file is optional.
+The loader reads CSV or Parquet and joins only `DeviceType` from the matching
+identity file using `TransactionID`. Transactions without an identity match stay
+in the data with a missing device category. The identity file is optional.
+Raw datasets and generated artifacts are excluded from Git.
 
 ## Setup
 
-Use Python and run these commands from the project folder:
+Use Python 3.12 and run these commands from the project folder:
 
 ```powershell
 python -m venv .venv
@@ -40,40 +50,43 @@ python -m fraud_detection
 Each run replaces the three saved models, held-out prediction CSVs, and
 `report.json` in `artifacts/`.
 
+- `logistic_regression.joblib`, `random_forest.joblib`, `xgboost.joblib`: trained pipelines and thresholds.
+- `<model>_test_predictions.csv`: test transactions, fraud scores, flags, and outcomes.
+- `report.json`: validation, test, and full-dataset results.
+
 ## Model inputs
 
-| Columns | Preparation |
+All three models use **392 transaction predictors plus `DeviceType`: 393 source
+inputs before encoding**.
+
+| Columns | Use |
 | --- | --- |
-| `TransactionAmt` | Log-transformed; also scaled for Logistic Regression. |
-| `C1`–`C14` | Provided numeric features; scaled for Logistic Regression. |
+| `TransactionAmt` | `log1p(amount)` reduces the range between small and large payments. |
+| `TransactionDT` | Numeric time input and the key for chronological splitting. |
+| `C1`–`C14`, `D1`–`D15`, `V1`–`V339` | Provided numeric features with anonymized definitions. |
+| `dist1`, `dist2` | Provided numeric distance features. |
 | `ProductCD` | Product category. |
 | `card1`–`card6` | Categorical card attributes, including encoded fields. |
 | `addr1`, `addr2` | Categorical address codes. |
 | `P_emaildomain`, `R_emaildomain` | Purchaser and recipient email domains. |
+| `M1`–`M9` | Categorical match indicators. |
 | `DeviceType` | Device category from the identity file. |
 
-Logistic Regression and Random Forest use one-hot encoding for categorical fields.
-XGBoost uses native categorical splits with category codes learned from training
-data. These codes identify categories without implying an order; unseen labels
-are treated as unknown. Missing categorical values are represented as `missing`.
-Category mappings and numeric preprocessing are learned from training data only.
+`isFraud` supplies the training and evaluation labels: 1 means fraud, 0 means
+legitimate. `TransactionID` is used for joining and identifying predictions.
+Neither is a predictor. Other identity fields, including `DeviceInfo`, are excluded.
 
-`TransactionID` is used for joining and identifying predictions. `TransactionDT`
-is used for splitting. `isFraud` is the answer for training and evaluation.
-None of these three columns is a model input.
+Preprocessing is fitted on training rows only:
 
-The models currently leave out `D1`–`D15`, `M1`–`M9`, `V1`–`V339`,
-`id_*`, `DeviceInfo`, `dist1`, and `dist2`. These can be assessed in later
-experiments; their usefulness has not been ruled out.
+- Logistic Regression scales numeric inputs. It and Random Forest one-hot encode categories.
+- For D, distance, and V fields, those two models learn median replacements and add missing-value flags.
+- XGBoost handles numeric blanks directly and uses native categorical splits with category codes learned from training data.
+- Missing categories become `missing`; unseen categories are handled by the fitted encoders.
 
-All three models use the same 27 source columns. The numeric `C` values are used
-directly; their individual business meanings are anonymized.
-Random Forest combines 200 decision trees,
-with depth limited to 30 and at least 5 training records per leaf.
-XGBoost adds 300 trees sequentially, with maximum depth 6 and learning rate 0.05.
-Each new tree learns corrections to the predictions made by the earlier trees.
-It uses CPU histogram training, two workers, and a fraud class weight calculated
-from the training partition. These are initial settings for comparison.
+Logistic Regression uses `lbfgs` with up to 5,000 optimizer iterations. Random
+Forest uses 200 trees, maximum depth 30, and at least 5 samples per leaf. XGBoost
+uses 300 trees, maximum depth 6, and learning rate 0.05. Both tree models use two
+CPU workers. Class weighting accounts for fraud's rarity using training labels.
 
 ## Evaluation
 
@@ -83,7 +96,10 @@ Equal time values stay together; these percentages refer to distinct time
 values, so the percentages of transaction rows can differ.
 
 Validation chooses each model's threshold with the highest F1. That threshold
-stays fixed for all evaluation. Each model in `report.json` has:
+stays fixed for test and full-dataset evaluation. The preferred model is selected
+by validation F1.
+
+Each model in `report.json` has:
 
 - `validation`: results used to choose the threshold.
 - `test_data_only`: results on the held-out test partition.
@@ -91,24 +107,40 @@ stays fixed for all evaluation. Each model in `report.json` has:
 
 Use `test_data_only` to assess performance on unseen records. `full_run` uses
 the same trained model and threshold; it includes rows the model learned from.
-Both sections include precision, recall, F1, average precision, ROC-AUC, and
-true-positive, false-positive, and false-negative counts.
 Kaggle's separate test files have no fraud labels, so local evaluation uses the
 held-out part of the labeled training file.
 
+Predicting every payment as legitimate would achieve about 96.5% accuracy while
+catching no fraud. Precision, recall, F1, and ranking metrics reveal that failure.
+
 ## Results
 
-**The table shows results on held-out test data only: 88,081 transactions, with
-seed 42.** Each model's threshold was selected using validation data and applied
-unchanged to the test data. Thresholds below are rounded to six decimal places.
-These are exploratory results from repeated experiments on the same split.
+Measured results with **393 source inputs and seed 42**, from
+`artifacts/report.json`. Each threshold was selected using validation data and
+kept fixed for both tables. Repeated experiments have consulted the same test
+split, so these results are exploratory.
 
-| Model | Selected threshold | Precision | Recall | F1 | ROC-AUC |
+**Held-out test results: 88,081 transactions.**
+
+| Model | Precision | Recall | F1 | ROC-AUC |
+| --- | --- | --- | --- | --- |
+| Logistic Regression | 0.2783 | 0.4398 | 0.3409 | 0.8381 |
+| Random Forest | 0.4852 | 0.4372 | 0.4599 | **0.8783** |
+| XGBoost | **0.5210** | **0.4532** | **0.4847** | 0.8769 |
+
+XGBoost has the highest test F1. Random Forest has the highest test ROC-AUC.
+
+**Full-dataset counts, including training rows.** Use the first table to judge
+performance on unseen transactions. Thresholds are rounded to six decimal places.
+
+| Model | Selected threshold | Total transactions | True positives | False positives | False negatives |
 | --- | --- | --- | --- | --- | --- |
-| Logistic Regression | 0.846915 | 0.1909 | 0.2656 | 0.2221 | 0.7724 |
-| Random Forest | 0.709416 | 0.4171 | 0.3834 | 0.3995 | 0.8278 |
-| XGBoost | 0.818520 | 0.5759 | 0.4111 | 0.4797 | 0.8601 |
+| Logistic Regression | 0.899268 | 590,540 | 9,900 | 9,541 | 10,763 |
+| Random Forest | 0.625305 | 590,540 | 12,396 | 7,780 | 8,267 |
+| XGBoost | 0.776490 | 590,540 | 14,436 | 6,033 | 6,227 |
 
+True positives are fraud caught; false positives are legitimate transactions
+flagged; false negatives are fraud missed.
 
 The four metrics below range from 0 to 1; higher is better:
 
